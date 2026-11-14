@@ -1,0 +1,7 @@
+# Build the capture wrapper SWF:  haxe build.hxml
+-cp src
+-main Exporter
+-swf bin/exporter.swf
+-swf-version 11
+-D swf-header=800:600:60:000000
+-D no-traces

@@ -1,0 +1,23 @@
+{
+  "name": "seer-pet-frame-exporter",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Export every action of a Seer (赛尔号) pet fight animation as PNG frame sequences / GIFs, rendered by Ruffle in headless Chromium.",
+  "type": "module",
+  "bin": {
+    "seer-export": "export.mjs"
+  },
+  "scripts": {
+    "build-swf": "haxe build.hxml",
+    "export": "node export.mjs"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@ruffle-rs/ruffle": "^0.7.1",
+    "gifenc": "^1.0.3",
+    "playwright": "^1.63.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
