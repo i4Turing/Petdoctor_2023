@@ -42,7 +42,8 @@ class Exporter {
 
 	static var domain:ApplicationDomain;
 	static var holder:Sprite;
-	static var pet:MovieClip;
+	static var pet:MovieClip; // null when the exported `pet` is a plain Sprite (labels only on inner clips)
+	static var petObj:DisplayObjectContainer;
 	static var jobs:Array<Job> = [];
 	static var job:Job;
 	static var jobIndex:Int = -1;
@@ -106,12 +107,35 @@ class Exporter {
 
 		var labelJson = [];
 		if (domain.hasDefinition("pet")) {
-			pet = cast Type.createInstance(domain.getDefinition("pet"), []);
-			pet.stop();
+			var inst:Dynamic = Type.createInstance(domain.getDefinition("pet"), []);
+			petObj = cast inst;
+			pet = Std.isOfType(inst, MovieClip) ? cast inst : null;
+			if (pet != null)
+				pet.stop();
+			if (pet != null)
 			for (fl in pet.currentLabels) {
 				labelJson.push('{"name":${quote(fl.name)},"frame":${fl.frame}}');
 				if (labels == null || labels.indexOf(fl.name) >= 0)
-					jobs.push({name: fl.name, frame: fl.frame, cls: null});
+					jobs.push({name: fl.name, frame: fl.frame, cls: null, end: 0});
+			}
+			if (pet == null || pet.currentLabels.length == 0) {
+				// No labels on the pet itself. Map sprites like NoNo keep their direction labels on inner
+				// clips that the game sends to a label together (body, colour layers): play those.
+				var inner = labelled(petObj);
+				if (inner.length > 0) {
+					var ls = inner[0].currentLabels;
+					for (i in 0...ls.length) {
+						var fl = ls[i];
+						var end = i + 1 < ls.length ? ls[i + 1].frame - 1 : inner[0].totalFrames;
+						labelJson.push('{"name":${quote(fl.name)},"frame":${fl.frame}}');
+						if (labels == null || labels.indexOf(fl.name) >= 0)
+							jobs.push({name: fl.name, frame: -fl.frame, cls: null, end: end});
+					}
+				} else if (classes == null || classes.length == 0) {
+					// no labels anywhere (a one-off action clip): play it through once
+					labelJson.push('{"name":"play","frame":1}');
+					jobs.push({name: "play", frame: 1, cls: null, end: 0});
+				}
 			}
 		} else if (classes == null) {
 			fail("this swf has no exported `pet` class (not a fight animation?)");
@@ -120,7 +144,7 @@ class Exporter {
 		if (classes != null)
 			for (c in classes)
 				if (domain.hasDefinition(c))
-					jobs.push({name: c, frame: 0, cls: c});
+					jobs.push({name: c, frame: 0, cls: c, end: 0});
 		var meta = '{"fps":${info.frameRate},"swfVersion":${info.swfVersion},"petTotalFrames":${pet == null ? 0 : pet.totalFrames},'
 			+ '"stageWidth":${info.width},"stageHeight":${info.height},"scale":$scale,"labels":[${labelJson.join(",")}]}';
 		send("/meta", stringBytes(meta));
@@ -154,7 +178,16 @@ class Exporter {
 				job = jobs[jobIndex];
 				while (holder.numChildren > 0)
 					holder.removeChildAt(0);
-				if (job.cls == null) {
+				if (job.cls == null && job.frame < 0) {
+					// nested labels: every inner clip that has this label goes there together
+					holder.addChild(petObj);
+					var name = job.name;
+					for (m in labelled(petObj))
+						for (fl in m.currentLabels)
+							if (fl.name == name)
+								m.gotoAndPlay(name);
+					subject = petObj;
+				} else if (job.cls == null) {
 					holder.addChild(pet);
 					pet.gotoAndStop(job.frame);
 					subject = pet;
@@ -173,6 +206,19 @@ class Exporter {
 					dlog("job " + job.name);
 				state = 1;
 			case 1:
+				if (job.cls == null && job.frame < 0) {
+					// nested labels: capture one pass of the label's segment of the first labelled clip
+					action = labelled(petObj)[0];
+					seq = 0;
+					lastFrame = -1;
+					stall = 0;
+					held = null;
+					state = 5;
+					return;
+				}
+				if (job.cls == null && job.name == "play" && pet != null && pet.totalFrames > 1) {
+					action = pet;
+				} else
 				action = job.cls == null ? findAction() : (Std.isOfType(subject, MovieClip) ? cast subject : null);
 				seq = 0;
 				lastFrame = -1;
@@ -198,6 +244,16 @@ class Exporter {
 					held = null;
 				}
 				captureAction();
+			case 5:
+				var cf = action.currentFrame;
+				var start = -job.frame;
+				// done once it has gone past the segment, looped back, or stopped
+				if (cf > job.end || cf < start || (seq > 0 && cf == lastFrame) || seq >= maxFrames || (seq > 0 && cf == start && lastFrame != start - 1 && lastFrame > start)) {
+					endJob();
+					return;
+				}
+				emit(capture(cf, action.totalFrames, null));
+				lastFrame = cf;
 			case 3:
 				if (pending == 0) {
 					state = 4;
@@ -205,6 +261,34 @@ class Exporter {
 					send("/done", stringBytes("{}"));
 				}
 		}
+	}
+
+	/** MovieClips anywhere under `top` that have frame labels, in display order */
+	static function labelled(top:DisplayObjectContainer):Array<MovieClip> {
+		var out:Array<MovieClip> = [];
+		var stack:Array<DisplayObject> = [];
+		var i = top.numChildren - 1;
+		while (i >= 0) {
+			stack.push(top.getChildAt(i));
+			i--;
+		}
+		while (stack.length > 0) {
+			var d = stack.pop();
+			if (Std.isOfType(d, MovieClip)) {
+				var m:MovieClip = cast d;
+				if (m.currentLabels.length > 0)
+					out.push(m);
+			}
+			if (Std.isOfType(d, DisplayObjectContainer)) {
+				var c:DisplayObjectContainer = cast d;
+				var j = c.numChildren - 1;
+				while (j >= 0) {
+					stack.push(c.getChildAt(j));
+					j--;
+				}
+			}
+		}
+		return out;
 	}
 
 	static function findAction():MovieClip {
@@ -349,5 +433,6 @@ class Exporter {
 	}
 }
 
-typedef Job = {name:String, frame:Int, cls:Null<String>};
+/** frame < 0: a label on inner clips starting at -frame and ending at `end` */
+typedef Job = {name:String, frame:Int, cls:Null<String>, end:Int};
 typedef Capture = {q:String, px:ByteArray, cf:Int};
